@@ -1,0 +1,11 @@
+{
+  "id": "baige",
+  "name": "金沙江白格滑坡区",
+  "center": [98.7, 31.08],
+  "zoom": 12,
+  "download_bbox": [98.62, 31.0, 98.78, 31.16],
+  "demo_aoi": [98.695, 31.075, 98.715, 31.09],
+  "imagery_mbtiles": "tiles/baige.mbtiles",
+  "dem_mbtiles": "tiles/dem.mbtiles",
+  "dem_zoom": 14
+}

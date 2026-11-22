@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+openai>=1.30
+pydantic>=2.6
+pydantic-settings>=2.2
+pyproj>=3.6
+shapely>=2.0
+requests>=2.31
+Pillow>=10.0

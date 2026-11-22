@@ -1,0 +1,25 @@
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python 环境
+__pycache__/
+*.py[cod]
+.venv/
+**/.venv/
+
+# 运行时数据与大文件
+backend/data/*.db*
+backend/data/uploads/
+backend/data/tiles/*.mbtiles
+eval-results/
+*.gguf
+
+# 测试与系统缓存
+.pytest_cache/
+.DS_Store
+Thumbs.db
