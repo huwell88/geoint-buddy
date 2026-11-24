@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # OFFLINE 时跳过云端直连端侧；ONLINE 时云端优先、失败自动回退端侧
     network_state: str = "ONLINE"
 
+    # ---- 模型偏好：cloud 云端优先（失败回退端侧）/ edge 强制端侧 ----
+    # 由前端模型下拉框切换，切换前先探测目标模型可用性
+    prefer_side: str = "cloud"
+
     # ---- 云端 AnyInt（OpenAI 兼容）----
     cloud_base_url: str = "https://api.anyint.ai/openai/v1"
     cloud_api_key: str = "REPLACE_ME"

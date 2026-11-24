@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>观澜 · 灾害应急遥感智能体</title>
 <link rel="stylesheet" href="/vendor/maplibre-gl.css">
-<link rel="stylesheet" href="/style.css?v=17">
+<link rel="stylesheet" href="/style.css?v=27">
 </head>
 <body>
 <div id="app">
@@ -19,9 +19,8 @@
         <option value="esri">在线影像(Esri)</option>
         <option value="osm">在线街道(OSM)</option>
       </select>
-      <select id="engine-sel" title="端侧引擎（影响聊天与影像判读）"></select>
+      <select id="engine-sel" title="模型切换（云端 / 端侧引擎，切换前自动探测可用性）"></select>
       <button id="btn-compare" title="同一 AOI 双端侧引擎并行判读，结果分别落图对比">⇄ 双引擎对比</button>
-      <span id="net-badge" class="badge">ONLINE</span>
     </div>
     <div id="aoi-hint">按住 Shift 并拖拽鼠标圈选待核查区域</div>
   </div>
@@ -47,9 +46,40 @@
       <select id="task-list"><option value="">选择历史任务…</option></select>
       <button id="btn-report" title="将当前任务生成 Markdown 态势研判报告并下载">⤓ 导出报告</button>
     </div>
+    <section id="agent-run" class="is-idle" aria-live="polite" hidden>
+      <div class="run-head">
+        <div class="run-title"><span class="run-beacon"></span><strong id="run-status">等待任务</strong></div>
+        <span id="run-engine" class="run-engine">端侧引擎</span>
+      </div>
+      <div class="run-phases" aria-label="Agent 执行阶段">
+        <div class="run-phase" data-phase="plan"><span>01</span><strong>任务规划</strong></div>
+        <div class="run-phase" data-phase="tool"><span>02</span><strong>工具执行</strong></div>
+        <div class="run-phase" data-phase="summary"><span>03</span><strong>证据汇总</strong></div>
+        <div class="run-phase" data-phase="final"><span>04</span><strong>研判完成</strong></div>
+      </div>
+      <div class="run-tool">
+        <span class="tool-mark" aria-hidden="true"></span>
+        <div class="tool-copy">
+          <span id="run-tool-kicker">当前节点</span>
+          <strong id="run-tool-name">等待 Agent 启动</strong>
+          <span id="run-tool-meta">发送研判任务后，这里将展示真实执行事件</span>
+        </div>
+        <span id="run-tool-state" class="tool-state">待命</span>
+      </div>
+      <div class="run-metrics">
+        <div><strong id="run-rounds">—</strong><span>LLM 轮次</span></div>
+        <div><strong id="run-tools">—</strong><span>工具结果</span></div>
+        <div><strong id="run-artifacts">—</strong><span>证据产物</span></div>
+      </div>
+      <div id="run-gap" class="run-gap" hidden></div>
+      <details id="run-details">
+        <summary>执行明细 <span id="run-trace-count">0</span></summary>
+        <div id="trace-log"></div>
+      </details>
+    </section>
     <div id="chat"></div>
     <div id="input-bar">
-      <textarea id="msg-input" rows="2" placeholder="例：研判圈选区域滑坡风险，输出态势报告"></textarea>
+      <textarea id="msg-input" rows="1" placeholder="例：研判圈选区域滑坡风险，输出态势报告"></textarea>
       <button id="btn-send" disabled>发送</button>
     </div>
     <div id="panels">
@@ -61,18 +91,10 @@
         <h3>Token 用量</h3>
         <pre id="usage-box">—</pre>
       </div>
-      <div class="panel">
-        <h3>断网演练</h3>
-        <div id="net-btns">
-          <button data-net="ONLINE">在线</button>
-          <button data-net="DEGRADED">弱网</button>
-          <button data-net="OFFLINE">断网</button>
-        </div>
-      </div>
     </div>
   </div>
 </div>
 <script src="/vendor/maplibre-gl.js"></script>
-<script src="/app.js?v=19"></script>
+<script src="/app.js?v=26"></script>
 </body>
 </html>

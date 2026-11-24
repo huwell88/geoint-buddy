@@ -56,22 +56,49 @@ def region() -> dict:
     return REGION
 
 
-# ---------------- 端侧引擎切换 ----------------
+# ---------------- 模型切换（云端 / 端侧引擎） ----------------
+
+def _probe_model(model_id: str) -> dict:
+    """探测模型服务可用性（3s 超时），供切换前预检。"""
+    from .llm import _client
+    if model_id == "cloud":
+        base_url, api_key = settings.cloud_base_url, settings.cloud_api_key
+    else:
+        eng = EDGE_ENGINES.get(model_id)
+        if not eng:
+            return {"reachable": False, "reason": f"未知模型 {model_id}"}
+        base_url, api_key = eng["base_url"], settings.edge_api_key
+    try:
+        _client(base_url, api_key, 3.0).models.list()
+        return {"reachable": True}
+    except Exception as e:
+        return {"reachable": False, "reason": f"{type(e).__name__}: {e}"[:200]}
+
 
 @app.get("/api/engines")
 def engines() -> dict:
-    return {"engines": list(EDGE_ENGINES.values()), "current": settings.edge_engine}
+    cloud = {"id": "cloud", "name": settings.cloud_model,
+             "desc": "云端大模型（调用失败自动回退端侧）"}
+    current = "cloud" if settings.prefer_side == "cloud" else settings.edge_engine
+    return {"engines": [cloud] + list(EDGE_ENGINES.values()), "current": current}
 
 
 class EngineIn(BaseModel):
-    engine: str  # qwen3vl / gemma4
+    engine: str  # cloud / qwen3vl / gemma4 / qwen3vl_ft
 
 
 @app.post("/api/engine")
 def set_engine(body: EngineIn) -> dict:
-    if body.engine not in EDGE_ENGINES:
-        raise HTTPException(400, f"未知引擎 {body.engine}，可选：{list(EDGE_ENGINES)}")
+    if body.engine != "cloud" and body.engine not in EDGE_ENGINES:
+        raise HTTPException(400, f"未知模型 {body.engine}，可选：cloud 或 {list(EDGE_ENGINES)}")
+    probe = _probe_model(body.engine)          # 切换前探测可用性，不可用则拒绝
+    if not probe["reachable"]:
+        raise HTTPException(400, f"模型不可用：{probe['reason']}")
+    if body.engine == "cloud":
+        settings.prefer_side = "cloud"
+        return {"current": "cloud", "engine": {"id": "cloud", "name": settings.cloud_model}}
     settings.edge_engine = body.engine
+    settings.prefer_side = "edge"
     return {"current": settings.edge_engine, "engine": EDGE_ENGINES[body.engine]}
 
 

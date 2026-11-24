@@ -1,11 +1,11 @@
 #!/bin/bash
 # 观澜全栈启动：双 llama-server（Qwen3VL 8081 / Gemma4 8082）+ uvicorn 8000。
-# uvicorn 带云端上行代理（Windows pproxy）；OFFLINE 演示可忽略代理不可达（自动回退端侧）。
+# uvicorn 默认直连云端；需要代理时在启动前设置 HTTPS_PROXY。
 # 用法：bash ~/geoint-buddy/scripts/start_all.sh
 set -e
 
 BIN="$HOME/local-llm-test/llama.cpp/build-cpu/bin/llama-server"
-PROXY="${HTTPS_PROXY:-http://172.25.11.121:18123}"
+PROXY="${HTTPS_PROXY:-}"
 
 up() { curl -s -m 2 "http://127.0.0.1:$1/health" >/dev/null 2>&1 || curl -s -m 2 "http://127.0.0.1:$1/api/health" >/dev/null 2>&1; }
 
@@ -31,13 +31,13 @@ else
   echo "✓ gemma4(8082) 已在运行"
 fi
 
-# 3) 后端（带云端上行代理）
+# 3) 后端（默认直连；HTTPS_PROXY 非空时使用上行代理）
 if ! up 8000; then
   ( cd "$HOME/geoint-buddy/backend" &&
     env HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" NO_PROXY=127.0.0.1,localhost \
       setsid nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
       > "$HOME/geoint-buddy-uvicorn.log" 2>&1 & )
-  echo "uvicorn(8000) 启动中（代理 $PROXY）…"
+  echo "uvicorn(8000) 启动中（${PROXY:+代理 $PROXY}${PROXY:-直连}）…"
 else
   echo "✓ uvicorn(8000) 已在运行"
 fi

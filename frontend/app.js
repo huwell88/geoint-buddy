@@ -199,6 +199,7 @@ $('btn-new-task').onclick = async () => {
     body: JSON.stringify({ title, aoi_geojson: bboxPoly(aoi).geometry }),
   }).then(r => r.json());
   taskId = r.id;
+  resetRun();
   $('btn-send').disabled = false;
   addMsg('system', `任务已创建（${r.id}）。AOI 面积可用自然语言询问，例如：研判圈选区域滑坡风险。`);
   await loadTasks();
@@ -218,6 +219,7 @@ async function loadTasks() {
 }
 $('task-list').onchange = (e) => {
   taskId = e.target.value || null;
+  resetRun();
   $('btn-send').disabled = !taskId;
   $('chat').innerHTML = '';
   if (taskId) loadHistory();
@@ -228,7 +230,7 @@ async function loadHistory() {
   const msgs = await fetch(`/api/tasks/${taskId}/messages`).then(r => r.json());
   for (const m of msgs) {
     if (m.role === 'tool') continue;
-    addMsg(m.role, m.content);
+    addMsg(m.role, m.content, false);
   }
 }
 
@@ -272,25 +274,127 @@ function mdToHtml(md) {
   return html;
 }
 
-function addMsg(role, text) {
+function addMsg(role, text, animate = true) {
   const div = document.createElement('div');
-  div.className = `msg ${role}`;
+  div.className = `msg ${role}${animate ? ' msg-enter' : ''}`;
   if (role === 'assistant') div.innerHTML = mdToHtml(text);   // 最终回答渲染 Markdown
   else div.textContent = text;
   $('chat').appendChild(div);
   $('chat').scrollTop = $('chat').scrollHeight;
   return div;
 }
+const RUN_PHASES = ['plan', 'tool', 'summary', 'final'];
+const TOOL_NAMES = {
+  geo_area: '计算 AOI 面积', dem_stats: '提取 DEM 地形证据', vlm_inspect: '视觉影像判读',
+  save_layer: '保存研判图层', terrain_profile: '生成地形剖面', list_layers: '读取任务图层',
+};
+let runState = null;
+
+function resetRun() {
+  runState = {
+    status: 'idle', phase: null, rounds: 0, toolResults: 0, artifacts: new Set(),
+    traceCount: 0, gap: null, budget: null, engineLabel: null,
+    current: { kicker: '当前节点', name: '等待 Agent 启动', meta: '发送研判任务后，这里将展示真实执行事件', state: '待命' },
+  };
+  $('trace-log').innerHTML = '';
+  $('run-details').open = false;
+  renderRun();
+  $('agent-run').hidden = true;
+}
+
+function beginRun() {
+  resetRun();
+  runState.status = 'running';
+  runState.current = { kicker: '任务已提交', name: '正在连接 Agent', meta: '等待后端返回第一个执行事件', state: '启动中' };
+  $('agent-run').hidden = false;
+  renderRun();
+}
+
+function setRunPhase(phase) {
+  runState.phase = phase;
+  if (runState.status !== 'complete' && runState.status !== 'warning') runState.status = 'running';
+}
+
+function renderRun() {
+  if (!runState) return;
+  const root = $('agent-run');
+  root.className = `is-${runState.status}`;
+  const engineLabel = runState.engineLabel || modelLabel(currentModel);
+  $('run-engine').textContent = engineLabel;
+  $('run-engine').classList.toggle('is-cloud', engineLabel.startsWith('云端'));
+  const statusText = { idle: '等待任务', running: 'Agent 正在执行', complete: '本轮研判完成', warning: '有限结论 · 证据不足', error: '执行中断或工具失败' };
+  $('run-status').textContent = statusText[runState.status] || 'Agent 执行状态';
+
+  const currentIndex = RUN_PHASES.indexOf(runState.phase);
+  document.querySelectorAll('.run-phase').forEach((node, index) => {
+    node.classList.remove('is-active', 'is-done', 'is-error');
+    node.removeAttribute('aria-current');
+    if (currentIndex < 0) return;
+    const finalDone = currentIndex === RUN_PHASES.length - 1 && ['complete', 'warning'].includes(runState.status);
+    if (index < currentIndex || finalDone) node.classList.add('is-done');
+    else if (index === currentIndex) {
+      node.classList.add(runState.status === 'error' ? 'is-error' : 'is-active');
+      node.setAttribute('aria-current', 'step');
+    }
+  });
+
+  const current = runState.current;
+  const toolTone = runState.status === 'error' ? 'error'
+    : runState.status === 'warning' ? 'warning'
+    : runState.status === 'complete' || ['已完成', '缓存复用', '已返回'].includes(current.state) ? 'done'
+    : runState.status === 'running' ? 'active' : 'idle';
+  document.querySelector('.run-tool').dataset.state = toolTone;
+  $('run-tool-kicker').textContent = current.kicker;
+  $('run-tool-name').textContent = current.name;
+  $('run-tool-meta').textContent = current.meta;
+  $('run-tool-state').textContent = current.state;
+  const started = runState.status !== 'idle';
+  $('run-rounds').textContent = started ? runState.rounds : '—';
+  $('run-tools').textContent = started ? runState.toolResults : '—';
+  $('run-artifacts').textContent = started ? runState.artifacts.size : '—';
+  $('run-trace-count').textContent = runState.traceCount;
+  $('run-gap').hidden = !runState.gap;
+  if (runState.gap) $('run-gap').textContent = runState.gap;
+}
+
 function addTrace(text) {
+  if (!runState) resetRun();
   const div = document.createElement('div');
   div.className = 'msg trace';
   div.textContent = text;
-  $('chat').appendChild(div);
-  $('chat').scrollTop = $('chat').scrollHeight;
+  $('trace-log').appendChild(div);
+  runState.traceCount += 1;
+  $('run-trace-count').textContent = runState.traceCount;
+  if ($('run-details').open) $('trace-log').scrollTop = $('trace-log').scrollHeight;
   return div;
 }
 
+function compactArgs(args) {
+  const data = args || {};
+  const parts = [];
+  if (Array.isArray(data.bbox) && data.bbox.length === 4 && data.bbox.every(Number.isFinite))
+    parts.push(`AOI [${data.bbox.map(v => v.toFixed(4)).join(', ')}]`);
+  const focus = { landslide: '滑坡迹象', general: '综合灾害迹象' }[data.focus] || data.focus;
+  if (focus) parts.push(`目标：${focus}`);
+  if (parts.length) return parts.join(' · ');
+  const text = JSON.stringify(data);
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text;
+}
+
+function artifactKey(item) {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return String(item);
+  return item.id || item.layer_id || item.path || item.url || JSON.stringify(item);
+}
+
 $('btn-send').onclick = send;
+function resizeComposer() {
+  const input = $('msg-input');
+  input.style.height = '38px';
+  input.style.height = `${Math.min(input.scrollHeight, 104)}px`;
+  input.style.overflowY = input.scrollHeight > 104 ? 'auto' : 'hidden';
+}
+$('msg-input').addEventListener('input', resizeComposer);
 $('msg-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
@@ -299,9 +403,10 @@ async function send() {
   const text = $('msg-input').value.trim();
   if (!text || !taskId) return;
   $('msg-input').value = '';
+  resizeComposer();
   $('btn-send').disabled = true;
   addMsg('user', text);
-  const trace = addTrace('Agent 推理中…');
+  beginRun();
   let finalDiv = null;
 
   try {
@@ -309,6 +414,7 @@ async function send() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_id: taskId, message: text }),
     });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -321,60 +427,123 @@ async function send() {
       for (const p of parts) {
         if (!p.startsWith('data: ')) continue;
         const ev = JSON.parse(p.slice(6));
-        handleEvent(ev, trace);
-        if (ev.kind === 'final') {
-          if (!finalDiv) finalDiv = addMsg('assistant', ev.content);
+        handleEvent(ev);
+        if (ev.kind === 'final' && !finalDiv) {
+          finalDiv = addMsg('assistant', ev.content);
+          finalDiv.classList.add('is-final');
+          if (runState.gap) finalDiv.classList.add('is-limited');
         }
       }
     }
+    if (!finalDiv && runState.status === 'running') {
+      runState.status = 'error';
+      runState.current = { kicker: '连接中断', name: '未收到最终研判结果', meta: 'SSE 流已结束，请检查后端日志后重试', state: '中断' };
+      addTrace('〔中断〕SSE 流结束，但未收到 final 事件');
+    }
   } catch (err) {
+    runState.status = 'error';
+    runState.current = { kicker: '请求失败', name: 'Agent 连接中断', meta: err.message, state: '失败' };
+    addTrace(`〔请求失败〕${err.message}`);
     addMsg('system', `请求失败：${err.message}`);
   } finally {
-    trace.remove();
+    renderRun();
     $('btn-send').disabled = false;
     refreshLayers();
     refreshUsage();
   }
 }
 
-function handleEvent(ev, trace) {
+function handleEvent(ev) {
   switch (ev.kind) {
+    case 'start':
+      setRunPhase('plan');
+      runState.current = { kicker: '执行开始', name: '任务规划', meta: 'Agent 已接收任务，正在进入规划节点', state: '执行中' };
+      break;
     case 'step': {
-      const phases = {
-        plan: '任务规划', reuse_evidence: `复用${ev.evidence || ''}证据`,
-        tool: `执行 ${ev.tool || '工具'}`, custom_reason: '自定义补救推理', summary: '证据总结',
+      const phase = ['tool', 'review', 'reuse_evidence', 'custom_reason'].includes(ev.phase) ? 'tool'
+        : ev.phase === 'summary' ? 'summary' : 'plan';
+      setRunPhase(phase);
+      const phaseText = {
+        plan: '任务规划', reuse_evidence: `复用${ev.evidence || ''}证据`, review: '第二引擎条件复核',
+        tool: `执行 ${TOOL_NAMES[ev.tool] || ev.tool || '工具'}`, custom_reason: '自定义补救推理', summary: '证据汇总',
       };
-      trace.textContent = `步骤 ${ev.step} · ${phases[ev.phase] || ev.phase}…`;
+      runState.current = { kicker: `步骤 ${ev.step}`, name: phaseText[ev.phase] || ev.phase, meta: '阶段由后端实时事件驱动', state: '执行中' };
+      addTrace(`〔步骤 ${ev.step}〕${phaseText[ev.phase] || ev.phase}`);
       break;
     }
     case 'round': {
-      const eng = ev.usage?.engine_name ? `·${ev.usage.engine_name}` : '';
-      trace.textContent = `第 ${ev.round} 次 LLM 调用（${ev.side}${eng}，${ev.usage?.completion_tokens ?? '?'} tok）…`;
+      runState.rounds = Math.max(runState.rounds, Number(ev.round) || 0);
+      const sideText = ev.side === 'cloud' ? '云端' : '端侧';
+      const modelName = ev.usage?.engine_name || ev.usage?.model || '';
+      if (modelName) runState.engineLabel = `${sideText}·${modelName}`;
+      const eng = modelName ? ` · ${modelName}` : '';
+      const tokens = ev.usage?.completion_tokens ?? '—';
+      runState.current = { kicker: '模型调用已返回', name: `LLM 第 ${ev.round} 轮 · ${ev.phase || '推理'}`, meta: `${sideText}${eng} · 输出 ${tokens} tokens`, state: '已返回' };
+      addTrace(`〔模型〕第 ${ev.round} 轮 · ${sideText}${eng} · 输出 ${tokens} tokens`);
       break;
     }
     case 'tool_call':
+      setRunPhase('tool');
+      runState.current = { kicker: '工具调用', name: TOOL_NAMES[ev.tool] || ev.tool, meta: compactArgs(ev.args), state: '执行中' };
       addTrace(`〔工具〕${ev.tool} ${JSON.stringify(ev.args)}`);
-      if (ev.tool === 'vlm_inspect' && currentEngine === 'gemma4')
+      if (ev.tool === 'vlm_inspect' && currentModel === 'gemma4')
         addTrace('Gemma4 为思考模型，影像判读约需 3-5 分钟，请耐心等待…');
       break;
     case 'tool_result': {
+      runState.status = 'running';
+      runState.toolResults += 1;
+      for (const item of ev.artifacts || []) runState.artifacts.add(artifactKey(item));
       const quality = ev.quality?.status;
       const coverage = Number.isFinite(ev.quality?.coverage)
-        ? `，覆盖率 ${(ev.quality.coverage * 100).toFixed(1)}%` : '';
-      const qualityText = quality ? `〔质量 ${quality}${coverage}〕` : '';
-      const cached = ev.cached ? '（缓存复用）' : `（${ev.elapsed_s}s）`;
-      addTrace(`〔结果〕${ev.tool}${cached}${qualityText}${ev.preview}`);
+        ? ` · 覆盖率 ${(ev.quality.coverage * 100).toFixed(1)}%` : '';
+      const elapsed = ev.cached ? '缓存复用' : `${ev.elapsed_s ?? '—'} 秒`;
+      const qualityText = quality ? ` · 质量 ${quality}${coverage}` : '';
+      runState.current = {
+        kicker: '工具结果已返回', name: TOOL_NAMES[ev.tool] || ev.tool,
+        meta: `${elapsed}${qualityText}${ev.preview ? ` · ${ev.preview}` : ''}`,
+        state: ev.cached ? '缓存复用' : '已完成',
+      };
+      addTrace(`〔结果〕${ev.tool} · ${elapsed}${qualityText}${ev.preview ? ` · ${ev.preview}` : ''}`);
       if (ev.artifacts?.length || ev.tool === 'vlm_inspect' || ev.tool === 'save_layer' || ev.tool === 'terrain_profile')
-        refreshLayers();   // 新工具按 artifacts 刷新，保留旧事件兼容
+        refreshLayers();
       break;
     }
     case 'tool_error':
+      runState.status = 'error';
+      runState.current = { kicker: '工具执行失败', name: TOOL_NAMES[ev.tool] || ev.tool, meta: ev.message, state: '失败' };
       addTrace(`〔失败〕${ev.tool}：${ev.message}`);
       break;
+    case 'evidence_gap': {
+      const gap = ev.gap || {};
+      const coverage = Number.isFinite(gap.coverage) ? `DEM 覆盖率 ${(gap.coverage * 100).toFixed(1)}%` : 'DEM 未返回合格数据';
+      runState.gap = `地形证据不足：${coverage}。本次不输出区域整体定量风险结论。`;
+      runState.status = 'warning';
+      runState.current = { kicker: '证据门控已触发', name: '输出有限结论', meta: runState.gap, state: '证据不足' };
+      addTrace(`〔证据缺口〕${runState.gap}`);
+      break;
+    }
+    case 'final': {
+      runState.budget = ev.budget || null;
+      if (ev.evidence_gap && !runState.gap) runState.gap = '本次存在证据缺口，仅输出有限结论。';
+      setRunPhase('final');
+      runState.status = runState.gap ? 'warning' : 'complete';
+      const b = runState.budget;
+      runState.current = {
+        kicker: '本轮执行完成', name: runState.gap ? '有限研判结论已生成' : '研判结果与证据已生成',
+        meta: b ? `${b.steps} 个步骤 · ${b.tool_calls} 次工具调用 · ${b.llm_calls} 次 LLM 调用` : '最终结果已返回',
+        state: runState.gap ? '证据受限' : '已完成',
+      };
+      addTrace(`〔完成〕${runState.current.meta}`);
+      break;
+    }
     case 'error':
+      runState.status = 'error';
+      runState.current = { kicker: '后端错误', name: 'Agent 执行中断', meta: ev.message, state: '失败' };
+      addTrace(`〔错误〕${ev.message}`);
       addMsg('system', `错误：${ev.message}`);
       break;
   }
+  renderRun();
 }
 
 // ---------- 图层 ----------
@@ -411,6 +580,7 @@ function updateResultLayers() {
 
 async function refreshLayers() {
   const requestedTaskId = taskId;
+  const previousLayerIds = new Set(currentLayers.map(l => l.id));
   const ul = $('layer-list');
   currentLayers = [];
   updateResultLayers();
@@ -433,6 +603,7 @@ async function refreshLayers() {
     const visible = layerVisibility.get(l.id) !== false;
     const li = document.createElement('li');
     li.classList.toggle('is-hidden', !visible);
+    if (previousLayerIds.size && !previousLayerIds.has(l.id)) li.classList.add('layer-new');
     li.innerHTML = `<input type="checkbox" class="layer-visible" data-visible="${l.id}" ${visible ? 'checked' : ''} title="显示或隐藏图层">
       <span class="dot" style="background:${KIND_COLORS[l.kind] || '#ccc'}"></span>
       <span class="layer-name">${l.name}</span>
@@ -460,21 +631,13 @@ async function refreshLayers() {
 }
 $('btn-refresh-layers').onclick = refreshLayers;
 
-// ---------- 网络状态 ----------
-$('net-btns').querySelectorAll('button').forEach(btn => {
-  btn.onclick = async () => {
-    const r = await fetch('/api/network', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state: btn.dataset.net }),
-    }).then(r => r.json());
-    $('net-badge').textContent = r.network_state;
-    $('net-badge').className = 'badge ' + r.network_state.toLowerCase();
-  };
-});
-
-// ---------- 端侧引擎切换 ----------
-let currentEngine = 'qwen3vl';
+// ---------- 模型切换（云端 / 端侧引擎，切换前自动探测可用性） ----------
+let currentModel = 'cloud';
 const ENGINE_NAMES = {};
+
+function modelLabel(id) {
+  return `${id === 'cloud' ? '云端' : '端侧'}·${ENGINE_NAMES[id] || id}`;
+}
 
 async function loadEngines() {
   try {
@@ -482,26 +645,43 @@ async function loadEngines() {
     const sel = $('engine-sel');
     sel.innerHTML = '';
     for (const e of r.engines) {
+      ENGINE_NAMES[e.id] = e.name;
       const o = document.createElement('option');
-      o.value = e.id; o.textContent = `端侧·${e.name}`;
+      o.value = e.id; o.textContent = modelLabel(e.id);
       o.title = e.desc;
       sel.appendChild(o);
-      ENGINE_NAMES[e.id] = e.name;
     }
     sel.value = r.current;
-    currentEngine = r.current;
+    currentModel = r.current;
   } catch (e) { /* 后端旧版无此接口时忽略 */ }
 }
 
 $('engine-sel').onchange = async (e) => {
-  const r = await fetch('/api/engine', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ engine: e.target.value }),
-  }).then(r => r.json()).catch(() => ({}));
-  if (!r.current) { e.target.value = currentEngine; return; }
-  currentEngine = r.current;
-  const slow = r.current === 'gemma4' ? '（思考模型，判读约需 3-5 分钟）' : '';
-  addMsg('system', `端侧引擎已切换：${ENGINE_NAMES[r.current] || r.current}${slow}`);
+  const target = e.target.value;
+  const prev = currentModel;
+  e.target.disabled = true;
+  addMsg('system', `正在探测「${modelLabel(target)}」可用性…`);
+  try {
+    const resp = await fetch('/api/engine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: target }),
+    });
+    const r = await resp.json().catch(() => ({}));
+    if (!resp.ok || !r.current) {
+      addMsg('system', `切换失败：${r.detail || `HTTP ${resp.status}`}，已保持「${modelLabel(prev)}」`);
+      e.target.value = prev;
+      return;
+    }
+    currentModel = r.current;
+    renderRun();
+    const slow = r.current === 'gemma4' ? '（思考模型，判读约需 3-5 分钟）' : '';
+    addMsg('system', `模型已切换：${modelLabel(r.current)}${slow}`);
+  } catch (err) {
+    addMsg('system', `切换失败：${err.message}，已保持「${modelLabel(prev)}」`);
+    e.target.value = prev;
+  } finally {
+    e.target.disabled = false;
+  }
 };
 
 // ---------- 双引擎对比判读 ----------
@@ -526,15 +706,6 @@ $('btn-compare').onclick = async () => {
   btn.disabled = false;
 };
 
-// ---------- 云端可达性检测 ----------
-async function pingCloud() {
-  try {
-    const r = await fetch('/api/cloud/ping').then(r => r.json());
-    if (!r.reachable && r.reason !== 'OFFLINE 模式已强制端侧')
-      addMsg('system', `云端不可达（${r.reason}）。ONLINE 状态下将自动回退端侧研判；如需纯端侧可切换为断网模式。`);
-  } catch (e) { /* 忽略 */ }
-}
-
 // ---------- Token 用量 ----------
 async function refreshUsage() {
   const u = await fetch('/api/usage').then(r => r.json());
@@ -555,8 +726,8 @@ async function loadRegion() {
   }
 }
 
+resetRun();
 refreshUsage();
 loadTasks();
 loadEngines();
 loadRegion();
-pingCloud();

@@ -65,9 +65,9 @@ def chat(
 
     prefer: "cloud" 云端优先失败回退端侧；"edge" 强制端侧。
     engine: 指定端侧引擎 id（qwen3vl/gemma4），空则用当前全局引擎。
-    network_state=OFFLINE 时强制端侧。
+    network_state=OFFLINE 或 prefer_side=edge 时强制端侧。
     """
-    if settings.network_state == "OFFLINE":
+    if settings.network_state == "OFFLINE" or settings.prefer_side == "edge":
         prefer = "edge"
 
     eng = edge_engine_conf(engine)
@@ -116,7 +116,7 @@ def chat_with_image(
     engine: str | None = None,
 ) -> tuple[str, dict]:
     """多模态判读：图像 base64 + 文本问题。engine 可指定端侧引擎。"""
-    if settings.network_state == "OFFLINE" or engine:
+    if settings.network_state == "OFFLINE" or settings.prefer_side == "edge" or engine:
         prefer = "edge"   # 指定引擎即为端侧判读（如双引擎对比）
 
     messages = [{
